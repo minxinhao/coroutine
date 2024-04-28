@@ -3,10 +3,12 @@
 #include <cassert>
 #include <coroutine>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <thread>
 #include <tuple>
 #include <vector>
+
 //
 // 斐波那契的计算和输出使用协程进行调度
 // 每个FibonacciGenerator接受一个vector，其中是要计算的斐波那契数<1,3,5,9,7,100,22,...>
@@ -117,7 +119,14 @@ struct PrintAwaiter
             if (has_free_coro)
                 break;
         }
-        auto info = get_string("coro", coro_id, "resume");
+        if (handle[free_coro_id] == std::coroutine_handle<>(nullptr))
+        {
+            // 这个协程还没有启动，直接返回，返回到上层调用者进行启动
+            auto info = get_string(free_coro_id, " hasn't been started. So return to main.");
+            dbg(info);
+            return;
+        }
+        auto info = get_string("coro", coro_id, "resume", "free_coro_id", free_coro_id);
         dbg(info);
         handle[free_coro_id].resume();
     }
@@ -126,15 +135,14 @@ struct PrintAwaiter
 class FibonacciGenerator
 {
   public:
-    FibonacciGenerator(uint64_t _coro_id, std::vector<int> &_need)
-        : coro_id(_coro_id), needs(_need)
+    FibonacciGenerator(uint64_t _coro_id, std::vector<int> &_need) : coro_id(_coro_id), needs(_need)
     {
         dbg(coro_id);
     }
 
     ~FibonacciGenerator()
     {
-        auto info= get_string("free", coro_id);
+        auto info = get_string("free", coro_id);
         dbg(info);
     }
 
@@ -154,7 +162,7 @@ class FibonacciGenerator
         for (auto need : needs)
         {
             // 计算并打印f(1)~f(n)
-            auto info = get_string("coro",coro_id,"cal", need);
+            auto info = get_string("coro", coro_id, "cal", need);
             dbg(info);
             middle_res.clear();
             middle_res.push_back(need);
@@ -195,16 +203,35 @@ void print_thread_loop(int num_coro, std::atomic_bool &exit_flag, PassPrinBuffer
     }
 }
 
+std::vector<Buffer> generate_needs(int num_coro, int every_coro)
+{
+    std::vector<Buffer> res(num_coro);
+    // 使用默认随机数引擎
+    std::random_device rd;
+    std::default_random_engine eng(rd());
+    // 生成均匀分布的整数随机数
+    std::uniform_int_distribution<int> dist(1, 100);
+
+    for (int coro_id = 0; coro_id < num_coro; coro_id++)
+    {
+        res[coro_id].resize(every_coro);
+        for (int i = 0; i < every_coro; i++)
+        {
+            res[coro_id][i] = dist(eng);
+        }
+    }
+    return res;
+}
+
 int main()
 {
     dbg("start");
-    std::vector<Buffer> need{{11,21,31,5},{10, 20, 5, 15}};
-    int num_coro = 2;
+    int num_coro = 4;
+    std::vector<Buffer> need = generate_needs(num_coro, 10);
     CoroHandle handle(num_coro);
     PassPrinBuffer pass_buffer(num_coro);
     std::vector<FibonacciGenerator> fibo_coros;
-    FibonacciGenerator fibo_coro_0(3,need[0]);
-    FibonacciGenerator fibo_coro_1(4,need[1]);
+    fibo_coros.reserve(num_coro);
     for (int i = 0; i < num_coro; i++)
     {
         pass_buffer[i].store(0);
@@ -214,16 +241,16 @@ int main()
     {
         dbg("");
     }
-    // std::atomic_bool exit_flag;
-    // std::thread p_thread(print_thread_loop, num_coro, std::ref(exit_flag), std::ref(pass_buffer));
+    std::atomic_bool exit_flag;
+    std::thread p_thread(print_thread_loop, num_coro, std::ref(exit_flag), std::ref(pass_buffer));
 
-    // for (int i = 0; i < num_coro; i++)
-    // {
-    //     fibo_coros[i].cal_and_print(num_coro, handle, pass_buffer);
-    // }
+    for (int i = 0; i < num_coro; i++)
+    {
+        fibo_coros[i].cal_and_print(num_coro, handle, pass_buffer);
+    }
 
-    // exit_flag.store(true);
-    // p_thread.join();
+    exit_flag.store(true);
+    p_thread.join();
 
     return 0;
 }
